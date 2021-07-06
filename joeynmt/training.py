@@ -415,8 +415,8 @@ class TrainManager:
                 self.scheduler.step(epoch=epoch_no)
 
             # validate before training begins
-            if self.stats.steps % self.validation_freq == 0:
-                self._validate(valid_data, epoch_no)
+            # if self.stats.steps % self.validation_freq == 0:
+                # self._validate(valid_data, epoch_no)
                 
             self.model.train()
             if self.method == "a2c":
@@ -483,7 +483,7 @@ class TrainManager:
                     batch_loss = 0              # rest batch_loss
 
                     # validate on the entire dev set
-                    if self.stats.steps % self.validation_freq == 0:
+                    if self.stats.steps % self.validation_freq == 0 and self.stats.step != 0:
                         valid_duration = self._validate(valid_data, epoch_no)
                         total_valid_duration += valid_duration
 
