@@ -533,7 +533,7 @@ class TrainManager:
                     batch_loss = 0  # rest batch_loss
 
                     # validate on the entire dev set
-                    if self.stats.steps % self.validation_freq == 0 and self.stats.step != 0:
+                    if self.stats.steps % self.validation_freq == 0 and self.stats.steps != 0:
                         valid_duration = self._validate(valid_data, epoch_no)
                         total_valid_duration += valid_duration
 

@@ -131,8 +131,6 @@ def validate_on_data(model: Model, data: Dataset,
 
             # run as during training with teacher forcing
             if compute_loss and batch.trg is not None:
-                import pdb
-                pdb.set_trace()
                 if reinforcement_learning:  
                     batch_loss, distribution, _, _ = model(
                         return_type=method, max_output_length=max_output_length,
@@ -167,10 +165,10 @@ def validate_on_data(model: Model, data: Dataset,
                 total_ntokens += batch.ntokens
                 total_nseqs += batch.nseqs
 
-                if reinforcement_learning and log_probabilities:
-                    distribution[0] = [distribution[0]]
-                    for index, item in enumerate(distribution):
-                        valid_data[index].extend(item)
+                # if reinforcement_learning and log_probabilities:
+                #     distribution[0] = [distribution[0]]
+                #     for index, item in enumerate(distribution):
+                #         valid_data[index].extend(item)
 
             # run as during inference to produce translations
             output, attention_scores = run_batch(
