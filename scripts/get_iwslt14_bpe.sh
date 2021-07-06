@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 
 # Adapted from https://github.com/facebookresearch/MIXER/blob/master/prepareData.sh
-# Adapted from https://github.com/pytorch/fairseq/blob/master/examples/translation/prepare-iwslt14.sh
-
+# Adapted from https://github.com/pytorch/fairseq/blob/master/examples/translation/prepare-iwslt14.sh 
 git clone https://github.com/moses-smt/mosesdecoder.git
 
 MOSES=`pwd`/mosesdecoder
@@ -26,14 +25,14 @@ mkdir -p ${orig} ${tmp} ${prep}
 
 echo "Downloading data from ${URL}..."
 cd ${orig}
-curl -O "${URL}"
-
-if [ -f ${GZ} ]; then
-    echo "Data successfully downloaded."
-else
-    echo "Data not successfully downloaded."
-    exit
-fi
+#curl -O "${URL}"
+#
+#if [ -f ${GZ} ]; then
+#    echo "Data successfully downloaded."
+#else
+#    echo "Data not successfully downloaded."
+#    exit
+#fi
 
 tar zxvf ${GZ}
 cd ..
