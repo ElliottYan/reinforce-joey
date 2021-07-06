@@ -13,7 +13,7 @@ __all__ = ["greedy", "transformer_greedy", "beam_search", "run_batch"]
 
 
 def greedy(src_mask: Tensor, max_output_length: int, model: Model,
-           encoder_output: Tensor, encoder_hidden: Tensor)\
+           encoder_output: Tensor, encoder_hidden: Tensor) \
         -> (np.array, np.array):
     """
     Greedy decoding. Select the token word highest probability at each time
@@ -137,7 +137,7 @@ def transformer_greedy(
         with torch.no_grad():
             logits, _, _, _ = model(
                 return_type="decode",
-                trg_input=ys, # model.trg_embed(ys) # embed the previous tokens
+                trg_input=ys,  # model.trg_embed(ys) # embed the previous tokens
                 encoder_output=encoder_output,
                 encoder_hidden=None,
                 src_mask=src_mask,
@@ -170,9 +170,7 @@ def beam_search(model: Model, size: int,
     """
     Beam search with size k.
     Inspired by OpenNMT-py, adapted for Transformer.
-
     In each decoding step, find the k most likely partial hypotheses.
-
     :param model:
     :param size: size of the beam
     :param encoder_output:
@@ -197,17 +195,23 @@ def beam_search(model: Model, size: int,
     transformer = isinstance(model.decoder, TransformerDecoder)
     batch_size = src_mask.size(0)
     att_vectors = None  # not used for Transformer
+    hidden = None  # not used for Transformer
+    trg_mask = None  # not used for RNN
 
     # Recurrent models only: initialize RNN hidden state
     # pylint: disable=protected-access
     if not transformer:
+        # tile encoder states and decoder initial states beam_size times
         hidden = model.decoder._init_hidden(encoder_hidden)
-    else:
-        hidden = None
-
-    # tile encoder states and decoder initial states beam_size times
-    if hidden is not None:
         hidden = tile(hidden, size, dim=1)  # layers x batch*k x dec_hidden_size
+        # DataParallel splits batch along the 0th dim.
+        # Place back the batch_size to the 1st dim here.
+        if isinstance(hidden, tuple):
+            h, c = hidden
+            hidden = (h.permute(1, 0, 2), c.permute(1, 0, 2))
+        else:
+            hidden = hidden.permute(1, 0, 2)
+            # batch*k x layers x dec_hidden_size
 
     encoder_output = tile(encoder_output.contiguous(), size,
                           dim=0)  # batch*k x src_len x enc_hidden_size
@@ -219,8 +223,6 @@ def beam_search(model: Model, size: int,
         if isinstance(model, torch.nn.DataParallel):
             trg_mask = torch.stack(
                 [src_mask.new_ones([1, 1]) for _ in model.device_ids])
-    else:
-        trg_mask = None
 
     # numbering elements in the batch
     batch_offset = torch.arange(batch_size, dtype=torch.long, device=device)
@@ -273,9 +275,9 @@ def beam_search(model: Model, size: int,
             logits, hidden, att_scores, att_vectors = model(
                 return_type="decode",
                 encoder_output=encoder_output,
-                encoder_hidden=encoder_hidden,
+                encoder_hidden=None,  # used to initialize decoder_hidden only
                 src_mask=src_mask,
-                trg_input=decoder_input, #trg_embed = embed(decoder_input)
+                trg_input=decoder_input,  # trg_embed = embed(decoder_input)
                 decoder_hidden=hidden,
                 att_vector=att_vectors,
                 unroll_steps=1,
@@ -286,7 +288,7 @@ def beam_search(model: Model, size: int,
         # this point, so we only want to know about the last time step.
         if transformer:
             logits = logits[:, -1]  # keep only the last time step
-            hidden = None           # we don't need to keep it for transformer
+            hidden = None  # we don't need to keep it for transformer
 
         # batch*k x trg_vocab
         log_probs = F.log_softmax(logits, dim=-1).squeeze(1)
@@ -318,8 +320,8 @@ def beam_search(model: Model, size: int,
 
         # map beam_index to batch_index in the flat representation
         batch_index = (
-            topk_beam_index
-            + beam_offset[:topk_beam_index.size(0)].unsqueeze(1))
+                topk_beam_index
+                + beam_offset[:topk_beam_index.size(0)].unsqueeze(1))
         select_indices = batch_index.view(-1)
 
         # append latest prediction
@@ -384,12 +386,12 @@ def beam_search(model: Model, size: int,
             if isinstance(hidden, tuple):
                 # for LSTMs, states are tuples of tensors
                 h, c = hidden
-                h = h.index_select(1, select_indices)
-                c = c.index_select(1, select_indices)
+                h = h.index_select(0, select_indices)
+                c = c.index_select(0, select_indices)
                 hidden = (h, c)
             else:
                 # for GRUs, states are single tensors
-                hidden = hidden.index_select(1, select_indices)
+                hidden = hidden.index_select(0, select_indices)
 
         if att_vectors is not None:
             att_vectors = att_vectors.index_select(0, select_indices)
@@ -403,17 +405,15 @@ def beam_search(model: Model, size: int,
         return filled
 
     # from results to stacked outputs
-    assert n_best == 1
-    # only works for n_best=1 for now
-    final_outputs = pad_and_stack_hyps([r[0].cpu().numpy() for r in
-                                        results["predictions"]],
-                                       pad_value=pad_index)
-
+    final_outputs = pad_and_stack_hyps(
+        [u.cpu().numpy() for r in results["predictions"] for u in r],
+        pad_value=pad_index)
     return final_outputs, None
 
 
 def run_batch(model: Model, batch: Batch, max_output_length: int,
-              beam_size: int, beam_alpha: float) -> (np.array, np.array):
+              beam_size: int, beam_alpha: float,
+              n_best: int = 1) -> (np.array, np.array):
     """
     Get outputs and attentions scores for a given batch
 
@@ -422,14 +422,13 @@ def run_batch(model: Model, batch: Batch, max_output_length: int,
     :param max_output_length: maximum length of hypotheses
     :param beam_size: size of the beam for beam search, if 0 use greedy
     :param beam_alpha: alpha value for beam search
+    :param n_best: candidates to return
     :return: stacked_output: hypotheses for batch,
         stacked_attention_scores: attention scores for batch
     """
     with torch.no_grad():
         encoder_output, encoder_hidden, _, _ = model(
-            return_type="encode", src=batch.src,
-            src_length=batch.src_length,
-            src_mask=batch.src_mask)
+            return_type="encode", **vars(batch))
 
     # if maximum output length is not globally specified, adapt to src len
     if max_output_length is None:
@@ -452,6 +451,7 @@ def run_batch(model: Model, batch: Batch, max_output_length: int,
             encoder_hidden=encoder_hidden,
             src_mask=batch.src_mask,
             max_output_length=max_output_length,
-            alpha=beam_alpha)
+            alpha=beam_alpha,
+            n_best=n_best)
 
     return stacked_output, stacked_attention_scores

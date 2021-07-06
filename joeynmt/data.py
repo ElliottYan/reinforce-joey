@@ -6,12 +6,18 @@ import sys
 import random
 import os
 import os.path
-from typing import Optional
+from typing import Optional, Union
 import logging
 
-from torchtext.datasets import TranslationDataset
-from torchtext import data
-from torchtext.data import Dataset, Iterator, Field
+try:
+    from torchtext.datasets import TranslationDataset
+    from torchtext import data
+    from torchtext.data import Dataset, Iterator, Field
+except:
+    from torchtext.legacy.datasets import TranslationDataset
+    from torchtext.legacy import data
+    from torchtext.legacy.data import Dataset, Iterator, Field
+
 
 from joeynmt.constants import UNK_TOKEN, EOS_TOKEN, BOS_TOKEN, PAD_TOKEN
 from joeynmt.vocabulary import build_vocab, Vocabulary
@@ -20,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def load_data(data_cfg: dict, datasets: list = None)\
-        -> (Dataset, Dataset, Optional[Dataset], Vocabulary, Vocabulary):
+        -> Union[Dataset, Dataset, Optional[Dataset], Vocabulary, Vocabulary]:
     """
     Load train, dev and optionally test data as specified in configuration.
     Vocabularies are created from the training set with a limit of `voc_limit`
@@ -76,7 +82,7 @@ def load_data(data_cfg: dict, datasets: list = None)\
 
     train_data = None
     if "train" in datasets and train_path is not None:
-        logger.info("loading training data...")
+        logger.info("Loading training data...")
         train_data = TranslationDataset(path=train_path,
                                         exts=("." + src_lang, "." + trg_lang),
                                         fields=(src_field, trg_field),
@@ -106,7 +112,7 @@ def load_data(data_cfg: dict, datasets: list = None)\
     assert (train_data is not None) or (src_vocab_file is not None)
     assert (train_data is not None) or (trg_vocab_file is not None)
 
-    logger.info("building vocabulary...")
+    logger.info("Building vocabulary...")
     src_vocab = build_vocab(field="src", min_freq=src_min_freq,
                             max_size=src_max_size,
                             dataset=train_data, vocab_file=src_vocab_file)
@@ -116,14 +122,14 @@ def load_data(data_cfg: dict, datasets: list = None)\
 
     dev_data = None
     if "dev" in datasets and dev_path is not None:
-        logger.info("loading dev data...")
+        logger.info("Loading dev data...")
         dev_data = TranslationDataset(path=dev_path,
                                       exts=("." + src_lang, "." + trg_lang),
                                       fields=(src_field, trg_field))
 
     test_data = None
     if "test" in datasets and test_path is not None:
-        logger.info("loading test data...")
+        logger.info("Loading test data...")
         # check if target exists
         if os.path.isfile(test_path + "." + trg_lang):
             test_data = TranslationDataset(
@@ -135,7 +141,7 @@ def load_data(data_cfg: dict, datasets: list = None)\
                                     field=src_field)
     src_field.vocab = src_vocab
     trg_field.vocab = trg_vocab
-    logger.info("data loaded.")
+    logger.info("Data loaded.")
     return train_data, dev_data, test_data, src_vocab, trg_vocab
 
 
@@ -220,7 +226,10 @@ class MonoDataset(Dataset):
             src_file = path
         else:
             src_path = os.path.expanduser(path + ext)
-            src_file = open(src_path)
+            # Because the file can be stdin which doesn't need to be opened,
+            # easier not to use with here.
+            # pylint: disable=consider-using-with
+            src_file = open(src_path, encoding="utf-8")
 
         examples = []
         for src_line in src_file:

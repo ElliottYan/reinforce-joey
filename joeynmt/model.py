@@ -3,6 +3,8 @@
 Module to represents whole models
 """
 from typing import Callable
+import logging
+from typing import Union
 
 import torch
 import torch.nn as nn
@@ -18,6 +20,8 @@ from joeynmt.constants import PAD_TOKEN, EOS_TOKEN, BOS_TOKEN
 from joeynmt.vocabulary import Vocabulary
 from joeynmt.helpers import ConfigurationError, log_peakiness, join_strings
 from joeynmt.metrics import bleu
+
+logger = logging.getLogger(__name__)
 
 
 class RewardRegressionModel(nn.Module):
@@ -383,7 +387,7 @@ class Model(nn.Module):
         if log_probabilities else ([batch_loss, critic_loss], [])
 
     def forward(self, return_type: str = None, **kwargs) \
-            -> (Tensor, Tensor, Tensor, Tensor):
+            -> Union[Tensor, Tensor, Tensor, Tensor]:
         """ Interface for multi-gpu
 
         For DataParallel, We need to encapsulate all model call: model.encode(),
@@ -400,12 +404,8 @@ class Model(nn.Module):
         return_tuple = (None, None, None, None)
         if return_type == "loss":
             assert self.loss_function is not None
-            out, _, _, _ = self._encode_decode(
-                src=kwargs["src"],
-                trg_input=kwargs["trg_input"],
-                src_mask=kwargs["src_mask"],
-                src_length=kwargs["src_length"],
-                trg_mask=kwargs["trg_mask"])
+
+            out, _, _, _ = self._encode_decode(**kwargs)
 
             # compute log probs
             log_probs = F.log_softmax(out, dim=-1)
@@ -428,7 +428,8 @@ class Model(nn.Module):
             log_probabilities=kwargs["log_probabilities"],
             pickle_logs=kwargs["pickle_logs"]
             )
-            return_tuple = (loss, logging, None, None)
+            # return_tuple = (loss, logging, None, None)
+            return_tuple = (loss, None, None, None)
 
         elif return_type == "mrt":
             loss, logging = self.mrt(
@@ -445,7 +446,8 @@ class Model(nn.Module):
             log_probabilities=kwargs["log_probabilities"],
             pickle_logs=kwargs["pickle_logs"]
             )
-            return_tuple = (loss, logging, None, None)
+            # return_tuple = (loss, logging, None, None)
+            return_tuple = (loss, None, None, None)
 
         elif return_type == "a2c":
             loss, logging = self.ned_a2c(
@@ -460,27 +462,17 @@ class Model(nn.Module):
             log_probabilities=kwargs["log_probabilities"],
             pickle_logs=kwargs["pickle_logs"]
             )
-            return_tuple = (loss, logging, None, None)
+            # return_tuple = (loss, logging, None, None)
+            return_tuple = (loss, None, None, None)
 
         elif return_type == "encode":
-            encoder_output, encoder_hidden = self._encode(
-                src=kwargs["src"],
-                src_length=kwargs["src_length"],
-                src_mask=kwargs["src_mask"])
+            encoder_output, encoder_hidden = self._encode(**kwargs)
 
             # return encoder outputs
             return_tuple = (encoder_output, encoder_hidden, None, None)
 
         elif return_type == "decode":
-            outputs, hidden, att_probs, att_vectors = self._decode(
-                trg_input=kwargs["trg_input"],
-                encoder_output=kwargs["encoder_output"],
-                encoder_hidden=kwargs["encoder_hidden"],
-                src_mask=kwargs["src_mask"],
-                unroll_steps=kwargs["unroll_steps"],
-                decoder_hidden=kwargs["decoder_hidden"],
-                att_vector=kwargs.get("att_vector", None),
-                trg_mask=kwargs.get("trg_mask", None))
+            outputs, hidden, att_probs, att_vectors = self._decode(**kwargs)
 
             # return decoder outputs
             return_tuple = (outputs, hidden, att_probs, att_vectors)
@@ -488,8 +480,8 @@ class Model(nn.Module):
 
     # pylint: disable=arguments-differ
     def _encode_decode(self, src: Tensor, trg_input: Tensor, src_mask: Tensor,
-                       src_length: Tensor, trg_mask: Tensor = None) \
-            -> (Tensor, Tensor, Tensor, Tensor):
+                       src_length: Tensor, trg_mask: Tensor = None, **kwargs) \
+            -> Union[Tensor, Tensor, Tensor, Tensor]:
         """
         First encodes the source sentence.
         Then produces the target one word at a time.
@@ -503,16 +495,19 @@ class Model(nn.Module):
         """
         encoder_output, encoder_hidden = self._encode(src=src,
                                                       src_length=src_length,
-                                                      src_mask=src_mask)
+                                                      src_mask=src_mask,
+                                                      **kwargs)
+
         unroll_steps = trg_input.size(1)
+        assert "decoder_hidden" not in kwargs.keys()
         return self._decode(encoder_output=encoder_output,
                             encoder_hidden=encoder_hidden,
                             src_mask=src_mask, trg_input=trg_input,
                             unroll_steps=unroll_steps,
-                            trg_mask=trg_mask)
+                            trg_mask=trg_mask, **kwargs)
 
-    def _encode(self, src: Tensor, src_length: Tensor, src_mask: Tensor) \
-            -> (Tensor, Tensor):
+    def _encode(self, src: Tensor, src_length: Tensor, src_mask: Tensor,
+                **_kwargs) -> Union[Tensor, Tensor]:
         """
         Encodes the source sentence.
 
@@ -521,13 +516,14 @@ class Model(nn.Module):
         :param src_mask:
         :return: encoder outputs (output, hidden_concat)
         """
-        return self.encoder(self.src_embed(src), src_length, src_mask)
+        return self.encoder(self.src_embed(src), src_length, src_mask,
+                            **_kwargs)
 
     def _decode(self, encoder_output: Tensor, encoder_hidden: Tensor,
                 src_mask: Tensor, trg_input: Tensor,
                 unroll_steps: int, decoder_hidden: Tensor = None,
-                att_vector: Tensor = None, trg_mask: Tensor = None) \
-            -> (Tensor, Tensor, Tensor, Tensor):
+                att_vector: Tensor = None, trg_mask: Tensor = None, **_kwargs) \
+            -> Union[Tensor, Tensor, Tensor, Tensor]:
         """
         Decode, given an encoded source sentence.
 
@@ -548,7 +544,8 @@ class Model(nn.Module):
                             unroll_steps=unroll_steps,
                             hidden=decoder_hidden,
                             prev_att_vector=att_vector,
-                            trg_mask=trg_mask)
+                            trg_mask=trg_mask,
+                            **_kwargs)
 
     def __repr__(self) -> str:
         """
@@ -586,6 +583,7 @@ def build_model(cfg: dict = None,
     :param trg_vocab: target vocabulary
     :return: built and initialized model
     """
+    logger.info("Building an encoder-decoder model...")
     src_padding_idx = src_vocab.stoi[PAD_TOKEN]
     trg_padding_idx = trg_vocab.stoi[PAD_TOKEN]
 
@@ -665,4 +663,17 @@ def build_model(cfg: dict = None,
     # custom initialization of model parameters
     initialize_model(model, cfg, src_padding_idx, trg_padding_idx)
 
+    # initialize embeddings from file
+    pretrained_enc_embed_path = cfg["encoder"]["embeddings"].get(
+        "load_pretrained", None)
+    pretrained_dec_embed_path = cfg["decoder"]["embeddings"].get(
+        "load_pretrained", None)
+    if pretrained_enc_embed_path:
+        logger.info("Loading pretraind src embeddings...")
+        model.src_embed.load_from_file(pretrained_enc_embed_path, src_vocab)
+    if pretrained_dec_embed_path and not cfg.get("tied_embeddings", False):
+        logger.info("Loading pretraind trg embeddings...")
+        model.trg_embed.load_from_file(pretrained_dec_embed_path, trg_vocab)
+
+    logger.info("Enc-dec model built.")
     return model

@@ -4,15 +4,19 @@ This modules holds methods for generating predictions from a model.
 """
 import os
 import sys
-from typing import List, Optional
+from typing import List, Optional, Union
 import logging
 import numpy as np
 
 import torch
-from torchtext.data import Dataset, Field
-
+try:
+    from torchtext.data import Dataset
+except:
+    from torchtext.legacy.data import Dataset
+    
 from joeynmt.helpers import bpe_postprocess, load_config, make_logger,\
-    get_latest_checkpoint, load_checkpoint, store_attention_plots
+    get_latest_checkpoint, load_checkpoint, store_attention_plots, \
+    expand_reverse_index
 from joeynmt.metrics import bleu, chrf, token_accuracy, sequence_accuracy
 from joeynmt.model import build_model, Model, _DataParallel
 from joeynmt.search import run_batch
@@ -24,22 +28,24 @@ from joeynmt.vocabulary import Vocabulary
 logger = logging.getLogger(__name__)
 
 
-# pylint: disable=too-many-arguments,too-many-locals,no-member
+# pylint: disable=too-many-arguments,too-many-locals,no-member,too-many-branches
 def validate_on_data(model: Model, data: Dataset,
                      batch_size: int,
                      config: dict,
                      use_cuda: bool, max_output_length: int,
                      level: str, eval_metric: Optional[str],
                      n_gpu: int,
+                     batch_class: Batch = Batch,
                      compute_loss: bool = False,
                      beam_size: int = 1, beam_alpha: int = -1,
                      batch_type: str = "sentence",
                      postprocess: bool = True,
                      bpe_type: str = "subword-nmt",
                      sacrebleu: dict = None,
-                     critic: Model = None) \
-        -> (float, float, float, List[str], List[List[str]], List[str],
-            List[str], List[List[str]], List[np.array]):
+                     critic: Model = None,
+                     n_best: int = 1):
+        # -> Union(float, float, float, List[str], List[List[str]], List[str],
+            # List[str], List[List[str]], List[np.array]):
     """
     Generate translations for the given data.
     If `compute_loss` is True and references are given,
@@ -48,6 +54,7 @@ def validate_on_data(model: Model, data: Dataset,
     :param model: model module
     :param data: dataset for validation
     :param batch_size: validation batch size
+    :param batch_class: class type of batch
     :param use_cuda: if True, use CUDA
     :param max_output_length: maximum length for generated hypotheses
     :param level: segmentation level, one of "char", "bpe", "word"
@@ -63,6 +70,7 @@ def validate_on_data(model: Model, data: Dataset,
     :param postprocess: if True, remove BPE segmentation from translations
     :param bpe_type: bpe type, one of {"subword-nmt", "sentencepiece"}
     :param sacrebleu: sacrebleu options
+    :param n_best: Amount of candidates to return
 
     :return:
         - current_valid_score: current validation score [eval_metric],
@@ -116,12 +124,15 @@ def validate_on_data(model: Model, data: Dataset,
             entropy_divider+=1
             # run as during training to get validation loss (e.g. xent)
 
-            batch = Batch(valid_batch, pad_index, use_cuda=use_cuda)
+            batch = batch_class(valid_batch, pad_index, use_cuda=use_cuda)
             # sort batch now by src length and keep track of order
-            sort_reverse_index = batch.sort_by_src_length()
+            reverse_index = batch.sort_by_src_length()
+            sort_reverse_index = expand_reverse_index(reverse_index, n_best)
 
             # run as during training with teacher forcing
             if compute_loss and batch.trg is not None:
+                import pdb
+                pdb.set_trace()
                 if reinforcement_learning:  
                     batch_loss, distribution, _, _ = model(
                         return_type=method, max_output_length=max_output_length,
@@ -147,6 +158,7 @@ def validate_on_data(model: Model, data: Dataset,
                         trg_input=batch.trg_input, trg_mask=batch.trg_mask,
                         max_output_length=max_output_length,
                         src_mask=batch.src_mask, src_length=batch.src_length)
+                # batch_loss, _, _, _ = model(return_type="loss", **vars(batch))
                 if n_gpu > 1:
                     batch_loss = batch_loss.mean() # average on multi-gpu
                     if method == "a2c":
@@ -163,7 +175,8 @@ def validate_on_data(model: Model, data: Dataset,
             # run as during inference to produce translations
             output, attention_scores = run_batch(
                 model=model, batch=batch, beam_size=beam_size,
-                beam_alpha=beam_alpha, max_output_length=max_output_length)
+                beam_alpha=beam_alpha, max_output_length=max_output_length,
+                n_best=n_best)
 
             # sort outputs back to original order
             all_outputs.extend(output[sort_reverse_index])
@@ -171,7 +184,7 @@ def validate_on_data(model: Model, data: Dataset,
                 attention_scores[sort_reverse_index]
                 if attention_scores is not None else [])
 
-        assert len(all_outputs) == len(data)
+        assert len(all_outputs) == len(data) * n_best
 
         if compute_loss and total_ntokens > 0:
             # total validation loss
@@ -249,8 +262,11 @@ def parse_test_args(cfg, mode="test"):
     device = torch.device("cuda" if use_cuda else "cpu")
     if mode == 'test':
         n_gpu = torch.cuda.device_count() if use_cuda else 0
-        logger.info("Process device: %s, n_gpu: %d, batch_size per device: %d",
-            device, n_gpu, batch_size // n_gpu if n_gpu > 1 else batch_size)
+        k = cfg["testing"].get("beam_size", 1)
+        batch_per_device = batch_size*k // n_gpu if n_gpu > 1 else batch_size*k
+        logger.info("Process device: %s, n_gpu: %d, "
+                    "batch_size per device: %d (with beam_size)",
+                    device, n_gpu, batch_per_device)
         eval_metric = cfg["training"]["eval_metric"]
 
     elif mode == 'translate':
@@ -288,7 +304,7 @@ def parse_test_args(cfg, mode="test"):
     tokenizer_info = f"[{sacrebleu['tokenize']}]" \
         if eval_metric == "bleu" else ""
 
-    return batch_size, batch_type, use_cuda, n_gpu, level, \
+    return batch_size, batch_type, use_cuda, device, n_gpu, level, \
            eval_metric, max_output_length, beam_size, beam_alpha, \
            postprocess, bpe_type, sacrebleu, decoding_description, \
            tokenizer_info
@@ -297,6 +313,7 @@ def parse_test_args(cfg, mode="test"):
 # pylint: disable-msg=logging-too-many-args
 def test(cfg_file,
          ckpt: str,
+         batch_class: Batch = Batch,
          output_path: str = None,
          save_attention: bool = False,
          datasets: dict = None) -> None:
@@ -306,6 +323,7 @@ def test(cfg_file,
 
     :param cfg_file: path to configuration file
     :param ckpt: path to checkpoint to load
+    :param batch_class: class type of batch
     :param output_path: path to output
     :param datasets: datasets to predict
     :param save_attention: whether to save the computed attention weights
@@ -331,13 +349,13 @@ def test(cfg_file,
         _, dev_data, test_data, src_vocab, trg_vocab = load_data(
             data_cfg=cfg["data"], datasets=["dev", "test"])
         data_to_predict = {"dev": dev_data, "test": test_data}
-    else:   # avoid to load data again
+    else:  # avoid to load data again
         data_to_predict = {"dev": datasets["dev"], "test": datasets["test"]}
         src_vocab = datasets["src_vocab"]
         trg_vocab = datasets["trg_vocab"]
 
     # parse test args
-    batch_size, batch_type, use_cuda, n_gpu, level, eval_metric, \
+    batch_size, batch_type, use_cuda, device, n_gpu, level, eval_metric, \
         max_output_length, beam_size, beam_alpha, postprocess, \
         bpe_type, sacrebleu, decoding_description, tokenizer_info \
         = parse_test_args(cfg, mode="test")
@@ -350,7 +368,7 @@ def test(cfg_file,
     model.load_state_dict(model_checkpoint["model_state"])
 
     if use_cuda:
-        model.cuda()
+        model.to(device)
 
     # multi-gpu eval
     if n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
@@ -367,7 +385,7 @@ def test(cfg_file,
         score, loss, ppl, sources, sources_raw, references, hypotheses, \
         hypotheses_raw, attention_scores,valid_data = validate_on_data(
             model, data=data_set, batch_size=batch_size, config=cfg,
-            batch_type=batch_type, level=level,
+            batch_type=batch_type, batch_class=batch_class, level=level,
             max_output_length=max_output_length, eval_metric=eval_metric,
             use_cuda=use_cuda, compute_loss=False, beam_size=beam_size,
             beam_alpha=beam_alpha, postprocess=postprocess,
@@ -407,7 +425,11 @@ def test(cfg_file,
             logger.info("Translations saved to: %s", output_path_set)
 
 
-def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
+def translate(cfg_file: str,
+              ckpt: str,
+              output_path: str = None,
+              batch_class: Batch = Batch,
+              n_best: int = 1) -> None:
     """
     Interactive translation function.
     Loads model from checkpoint and translates either the stdin input or
@@ -419,6 +441,8 @@ def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
     :param cfg_file: path to configuration file
     :param ckpt: path to checkpoint to load
     :param output_path: path to output file
+    :param batch_class: class type of batch
+    :param n_best: amount of candidates to display
     """
 
     def _load_line_as_data(line):
@@ -427,7 +451,7 @@ def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
         tmp_name = "tmp"
         tmp_suffix = ".src"
         tmp_filename = tmp_name+tmp_suffix
-        with open(tmp_filename, "w") as tmp_file:
+        with open(tmp_filename, "w", encoding="utf-8") as tmp_file:
             tmp_file.write("{}\n".format(line))
 
         test_data = MonoDataset(path=tmp_name, ext=tmp_suffix,
@@ -445,11 +469,11 @@ def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
         score, loss, ppl, sources, sources_raw, references, hypotheses, \
         hypotheses_raw, attention_scores = validate_on_data(
             model, data=test_data, batch_size=batch_size,
-            batch_type=batch_type, level=level,
+            batch_class=batch_class, batch_type=batch_type, level=level,
             max_output_length=max_output_length, eval_metric="",
             use_cuda=use_cuda, compute_loss=False, beam_size=beam_size,
             beam_alpha=beam_alpha, postprocess=postprocess,
-            bpe_type=bpe_type, sacrebleu=sacrebleu, n_gpu=n_gpu)
+            bpe_type=bpe_type, sacrebleu=sacrebleu, n_gpu=n_gpu, n_best=n_best)
         return hypotheses
 
     cfg = load_config(cfg_file)
@@ -482,7 +506,7 @@ def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
     src_field.vocab = src_vocab
 
     # parse test args
-    batch_size, batch_type, use_cuda, n_gpu, level, _, \
+    batch_size, batch_type, use_cuda, device, n_gpu, level, _, \
         max_output_length, beam_size, beam_alpha, postprocess, \
         bpe_type, sacrebleu, _, _ = parse_test_args(cfg, mode="translate")
 
@@ -494,23 +518,39 @@ def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
     model.load_state_dict(model_checkpoint["model_state"])
 
     if use_cuda:
-        model.cuda()
+        model.to(device)
 
     if not sys.stdin.isatty():
         # input file given
         test_data = MonoDataset(path=sys.stdin, ext="", field=src_field)
-        hypotheses = _translate_data(test_data)
+        all_hypotheses = _translate_data(test_data)
 
         if output_path is not None:
             # write to outputfile if given
-            output_path_set = "{}".format(output_path)
-            with open(output_path_set, mode="w", encoding="utf-8") as out_file:
-                for hyp in hypotheses:
-                    out_file.write(hyp + "\n")
-            logger.info("Translations saved to: %s.", output_path_set)
+
+            def write_to_file(output_path_set, hypotheses):
+                with open(output_path_set, mode="w", encoding="utf-8") \
+                        as out_file:
+                    for hyp in hypotheses:
+                        out_file.write(hyp + "\n")
+                logger.info("Translations saved to: %s.", output_path_set)
+
+            if n_best > 1:
+                for n in range(n_best):
+                    file_name, file_extension = os.path.splitext(output_path)
+                    write_to_file(
+                        "{}-{}{}".format(
+                            file_name, n,
+                            file_extension if file_extension else ""
+                        ),
+                        [all_hypotheses[i]
+                         for i in range(n, len(all_hypotheses), n_best)]
+                    )
+            else:
+                write_to_file("{}".format(output_path), all_hypotheses)
         else:
             # print to stdout
-            for hyp in hypotheses:
+            for hyp in all_hypotheses:
                 print(hyp)
 
     else:
@@ -526,9 +566,11 @@ def translate(cfg_file: str, ckpt: str, output_path: str = None) -> None:
 
                 # every line has to be made into dataset
                 test_data = _load_line_as_data(line=src_input)
-
                 hypotheses = _translate_data(test_data)
-                print("JoeyNMT: {}".format(hypotheses[0]))
+
+                print("JoeyNMT: Hypotheses ranked by score")
+                for i, hyp in enumerate(hypotheses):
+                    print("JoeyNMT #{}: {}".format(i + 1, hyp))
 
             except (KeyboardInterrupt, EOFError):
                 print("\nBye.")

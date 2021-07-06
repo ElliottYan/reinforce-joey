@@ -12,6 +12,7 @@ import random
 import logging
 from logging import Logger
 from typing import Optional, List
+import pathlib
 import numpy as np
 import pkg_resources
 
@@ -19,7 +20,10 @@ import torch
 from torch import nn, Tensor
 from torch.utils.tensorboard import SummaryWriter
 
-from torchtext.data import Dataset
+try:
+    from torchtext.data import Dataset
+except:
+    from torchtext.legacy.data import Dataset
 import yaml
 from joeynmt.vocabulary import Vocabulary
 from joeynmt.plotting import plot_heatmap
@@ -79,7 +83,7 @@ def make_logger(log_dir: str = None, mode: str = "train") -> str:
     :param mode: log file name. 'train', 'test' or 'translate'
     :return: joeynmt version number
     """
-    logger = logging.getLogger("") # root logger
+    logger = logging.getLogger("")  # root logger
     version = pkg_resources.require("joeynmt")[0].version
     # add handlers only once.
     if len(logger.handlers) == 0:
@@ -172,19 +176,20 @@ def log_data_info(train_data: Dataset, valid_data: Dataset, test_data: Dataset,
     :param trg_vocab:
     """
     logger = logging.getLogger(__name__)
-    logger.info(
-        "Data set sizes: \n\ttrain %d,\n\tvalid %d,\n\ttest %d",
-            len(train_data), len(valid_data),
-            len(test_data) if test_data is not None else 0)
+    logger.info("Data set sizes: \n\ttrain %d,\n\tvalid %d,\n\ttest %d",
+                len(train_data), len(valid_data),
+                len(test_data) if test_data is not None else 0)
 
     logger.info("First training example:\n\t[SRC] %s\n\t[TRG] %s",
-        " ".join(vars(train_data[0])['src']),
-        " ".join(vars(train_data[0])['trg']))
+                " ".join(vars(train_data[0])['src']),
+                " ".join(vars(train_data[0])['trg']))
 
-    logger.info("First 10 words (src): %s", " ".join(
-        '(%d) %s' % (i, t) for i, t in enumerate(src_vocab.itos[:10])))
-    logger.info("First 10 words (trg): %s", " ".join(
-        '(%d) %s' % (i, t) for i, t in enumerate(trg_vocab.itos[:10])))
+    logger.info(
+        "First 10 words (src): %s",
+        " ".join('(%d) %s' % (i, t) for i, t in enumerate(src_vocab.itos[:10])))
+    logger.info(
+        "First 10 words (trg): %s",
+        " ".join('(%d) %s' % (i, t) for i, t in enumerate(trg_vocab.itos[:10])))
 
     logger.info("Number of Src words (types): %d", len(src_vocab))
     logger.info("Number of Trg words (types): %d", len(trg_vocab))
@@ -197,7 +202,7 @@ def load_config(path="configs/default.yaml") -> dict:
     :param path: path to YAML configuration file
     :return: configuration dictionary
     """
-    with open(path, 'r') as ymlfile:
+    with open(path, 'r', encoding="utf-8") as ymlfile:
         cfg = yaml.safe_load(ymlfile)
     return cfg
 
@@ -213,15 +218,21 @@ def bpe_postprocess(string, bpe_type="subword-nmt") -> str:
     if bpe_type == "sentencepiece":
         ret = string.replace(" ", "").replace("▁", " ").strip()
     elif bpe_type == "subword-nmt":
+        # Remove merge markers within the sentence.
         ret = string.replace("@@ ", "").strip()
+        # Remove final merge marker.
+        if ret.endswith("@@"):
+            ret = ret[:-2]
     else:
         ret = string.strip()
     return ret
 
 
-def store_attention_plots(attentions: np.array, targets: List[List[str]],
+def store_attention_plots(attentions: np.array,
+                          targets: List[List[str]],
                           sources: List[List[str]],
-                          output_prefix: str, indices: List[int],
+                          output_prefix: str,
+                          indices: List[int],
                           tb_writer: Optional[SummaryWriter] = None,
                           steps: int = 0) -> None:
     """
@@ -244,14 +255,20 @@ def store_attention_plots(attentions: np.array, targets: List[List[str]],
         trg = targets[i]
         attention_scores = attentions[i].T
         try:
-            fig = plot_heatmap(scores=attention_scores, column_labels=trg,
-                               row_labels=src, output_path=plot_file,
+            fig = plot_heatmap(scores=attention_scores,
+                               column_labels=trg,
+                               row_labels=src,
+                               output_path=plot_file,
                                dpi=100)
             if tb_writer is not None:
                 # lower resolution for tensorboard
-                fig = plot_heatmap(scores=attention_scores, column_labels=trg,
-                                   row_labels=src, output_path=None, dpi=50)
-                tb_writer.add_figure("attention/{}.".format(i), fig,
+                fig = plot_heatmap(scores=attention_scores,
+                                   column_labels=trg,
+                                   row_labels=src,
+                                   output_path=None,
+                                   dpi=50)
+                tb_writer.add_figure("attention/{}.".format(i),
+                                     fig,
                                      global_step=steps)
         # pylint: disable=bare-except
         except:
@@ -276,8 +293,8 @@ def get_latest_checkpoint(ckpt_dir: str) -> Optional[str]:
 
     # check existence
     if latest_checkpoint is None:
-        raise FileNotFoundError("No checkpoint found in directory {}."
-                                .format(ckpt_dir))
+        raise FileNotFoundError(
+            "No checkpoint found in directory {}.".format(ckpt_dir))
     return latest_checkpoint
 
 
@@ -388,3 +405,52 @@ def log_peakiness(pad_index, trg_vocab, k, distribs, trg, batch_size, max_output
 
 def join_strings(wordlist):
     return " ".join(wordlist).replace("@@ ", "")
+
+def latest_checkpoint_update(target: pathlib.Path,
+                             link_name: str) -> Optional[pathlib.Path]:
+    """
+    This function finds the file that the symlink currently points to, sets it
+    to the new target, and returns the previous target if it exists.
+
+    :param target: A path to a file that we want the symlink to point to.
+    :param link_name: This is the name of the symlink that we want to update.
+
+    :return:
+        - current_last: This is the previous target of the symlink, before it is
+            updated in this function. If the symlink did not exist before or did
+            not have a target, None is returned instead.
+    """
+    link = pathlib.Path(link_name)
+    if link.is_symlink():
+        current_last = link.resolve()
+        link.unlink()
+        link.symlink_to(target)
+        return current_last
+    link.symlink_to(target)
+    return None
+
+
+def expand_reverse_index(reverse_index: List[int], n_best: int = 1) \
+        -> List[int]:
+    """
+    expand resort_reverse_index for n_best prediction
+
+    ex. 1) reverse_index = [1, 0, 2] and n_best = 2, then this will return
+    [2, 3, 0, 1, 4, 5].
+
+    ex. 2) reverse_index = [1, 0, 2] and n_best = 3, then this will return
+    [3, 4, 5, 0, 1, 2, 6, 7, 8]
+
+    :param reverse_index: reverse_index returned from batch.sort_by_src_length()
+    :param n_best:
+    :return: expanded sort_reverse_index
+    """
+    if n_best == 1:
+        return reverse_index
+
+    resort_reverse_index = []
+    for ix in reverse_index:
+        for n in range(0, n_best):
+            resort_reverse_index.append(ix * n_best + n)
+    assert len(resort_reverse_index) == len(reverse_index) * n_best
+    return resort_reverse_index
