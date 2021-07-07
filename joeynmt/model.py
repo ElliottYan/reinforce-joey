@@ -173,17 +173,21 @@ class Model(nn.Module):
         """
         if add_gold:
             samples = samples+1
+        # [bsz, L, D], None
         encoder_output, encoder_hidden = self._encode(src, src_length,
                     src_mask)
         # if maximum output length is not globally specified, adapt to src len
         if max_output_length is None:
             max_output_length = int(max(src_length.cpu().numpy()) * 1.5)
         batch_size = src_mask.size(0)
+        # [bsz, 1]
         ys = encoder_output.new_full([batch_size, 1], self.bos_index, dtype=torch.long)
         trg_mask = src_mask.new_ones([1, 1, 1])
         total_prob = 0
         distributions = []
         attention_vectors = None
+        # [ns * bsz, L, D]
+        # repeat at dim 0, [1,2,3] --> [1,2,3,1,2,3]
         encoder_output = encoder_output.repeat(samples,1,1)
         if hasattr(self.decoder,'_init_hidden'):
             hidden = self.decoder._init_hidden(encoder_hidden)
@@ -194,7 +198,7 @@ class Model(nn.Module):
         else:
             hidden = (0,0)
         # repeat tensor for vectorized solution
-        ys = ys.repeat(samples, 1)
+        ys = ys.repeat(samples, 1) # [ns * bsz, L, D]
         src_mask = src_mask.repeat(samples,1,1)
         finished = src_mask.new_zeros((batch_size*samples)).byte()
         # decode tokens
@@ -210,6 +214,7 @@ class Model(nn.Module):
                 prev_att_vector=attention_vectors,
                 trg_mask=trg_mask
             )
+            # [ns * bsz, |V|]
             logits = logits[:, -1]/temperature
             distrib = Categorical(logits=logits)
             distributions.append(distrib)
@@ -223,6 +228,7 @@ class Model(nn.Module):
                     ith_column = tensor.new_tensor(data)
                 next_word[-batch_size:] = ith_column
             ys = torch.cat([ys, next_word.unsqueeze(-1)], dim=1)
+            # retain grad here.
             total_prob += distrib.log_prob(next_word)
             # prevent early stopping in decoding when logging gold token
             if not pickle_logs:
@@ -232,13 +238,17 @@ class Model(nn.Module):
                 # stop predicting if <eos> reached for all elements in batch
                 if (finished >= 1).sum() == batch_size*samples:
                     break
+        # remove bos
         ys = ys[:, 1:]
+        # split restore tensor from repeat.
+        # only repeat with ns and split with bsz
         all_sequences = torch.stack(torch.split(ys, batch_size))
-        sentence_probabs= list(torch.split(total_prob, batch_size))    
+        sentence_probabs= list(torch.split(total_prob, batch_size))
         predicted_outputs = [self.trg_vocab.arrays_to_sentences(arrays=sequ,
                                                         cut_at_eos=True) for sequ in all_sequences]
         gold_output = self.trg_vocab.arrays_to_sentences(arrays=trg,
                                                     cut_at_eos=True)
+        # remove bpe and join sentences
         predicted_sentences = [[join_strings(wordlist) for wordlist in predicted_output] 
             for predicted_output in predicted_outputs]
         gold_strings = [join_strings(wordlist) for wordlist in gold_output]
@@ -250,6 +260,7 @@ class Model(nn.Module):
         for index, Q in enumerate(list_of_Qs):
             for prediction, gold_ref, Q_iter in zip(predicted_sentences[index], all_gold_sentences[index], Q):
                 batch_loss -= bleu([prediction], [gold_ref])*Q_iter
+        # sacrebleu
         rewards = [bleu([prediction], [gold_ref]) for prediction, gold_ref in zip(predicted_sentences[-1], all_gold_sentences[-1])]
         # currently unused
         Qs_to_return = [q.tolist() for q in list_of_Qs]
@@ -416,6 +427,7 @@ class Model(nn.Module):
             # return batch loss
             #     = sum over all elements in batch that are not pad
             return_tuple = (batch_loss, None, None, None)
+            
         elif return_type == "reinforce":
             loss, logging = self.reinforce(
             src=kwargs["src"],
@@ -429,7 +441,10 @@ class Model(nn.Module):
             pickle_logs=kwargs["pickle_logs"]
             )
             # return_tuple = (loss, logging, None, None)
-            return_tuple = (loss, None, None, None)
+            if 'return_logging' in kwargs and kwargs['return_logging'] is True:
+                return_tuple = (loss, logging, None, None)
+            else:
+                return_tuple = (loss, None, None, None)
 
         elif return_type == "mrt":
             loss, logging = self.mrt(
@@ -447,7 +462,10 @@ class Model(nn.Module):
             pickle_logs=kwargs["pickle_logs"]
             )
             # return_tuple = (loss, logging, None, None)
-            return_tuple = (loss, None, None, None)
+            if 'return_logging' in kwargs and kwargs['return_logging'] is True:
+                return_tuple = (loss, logging, None, None)
+            else:
+                return_tuple = (loss, None, None, None)
 
         elif return_type == "a2c":
             loss, logging = self.ned_a2c(
@@ -463,7 +481,10 @@ class Model(nn.Module):
             pickle_logs=kwargs["pickle_logs"]
             )
             # return_tuple = (loss, logging, None, None)
-            return_tuple = (loss, None, None, None)
+            if 'return_logging' in kwargs and kwargs['return_logging'] is True:
+                return_tuple = (loss, logging, None, None)
+            else:
+                return_tuple = (loss, None, None, None)
 
         elif return_type == "encode":
             encoder_output, encoder_hidden = self._encode(**kwargs)

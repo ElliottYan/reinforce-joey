@@ -144,19 +144,21 @@ def validate_on_data(model: Model, data: Dataset,
                         add_gold=add_gold,
                         critic=critic, 
                         log_probabilities=log_probabilities, 
-                        pickle_logs=pickle_logs)
+                        pickle_logs=pickle_logs,
+                        return_logging=True)
                         
                     if method == "a2c":
                         losses = batch_loss
                         batch_loss = losses[0] 
                         critic_loss = losses[1] 
                 else:
-                    batch_loss, distribution, _, _ = model(
-                        return_type="loss", src=batch.src, trg=batch.trg,
-                        trg_input=batch.trg_input, trg_mask=batch.trg_mask,
-                        max_output_length=max_output_length,
-                        src_mask=batch.src_mask, src_length=batch.src_length)
-                # batch_loss, _, _, _ = model(return_type="loss", **vars(batch))
+                    # batch_loss, distribution, _, _ = model(
+                        # return_type="loss", src=batch.src, trg=batch.trg,
+                        # trg_input=batch.trg_input, trg_mask=batch.trg_mask,
+                        # max_output_length=max_output_length,
+                        # src_mask=batch.src_mask, src_length=batch.src_length, )
+                    batch_loss, distribution, _, _ = model(return_type="loss", return_logging=True, **vars(batch))
+                    
                 if n_gpu > 1:
                     batch_loss = batch_loss.mean() # average on multi-gpu
                     if method == "a2c":
@@ -165,10 +167,10 @@ def validate_on_data(model: Model, data: Dataset,
                 total_ntokens += batch.ntokens
                 total_nseqs += batch.nseqs
 
-                # if reinforcement_learning and log_probabilities:
-                #     distribution[0] = [distribution[0]]
-                #     for index, item in enumerate(distribution):
-                #         valid_data[index].extend(item)
+                if reinforcement_learning and log_probabilities:
+                    distribution[0] = [distribution[0]]
+                    for index, item in enumerate(distribution):
+                        valid_data[index].extend(item)
 
             # run as during inference to produce translations
             output, attention_scores = run_batch(
