@@ -13,6 +13,7 @@ import sys
 import collections
 import pathlib
 import numpy as np
+from numpy.lib.npyio import savez_compressed
 
 import torch
 from torch import Tensor
@@ -90,6 +91,8 @@ class TrainManager:
         self.log_probabilities = train_config["reinforcement_learning"].get("log_probabilities", False)
         self.pickle_logs = train_config["reinforcement_learning"].get("pickle_logs", False)
         self.topk = train_config["reinforcement_learning"].get("topk", 20)
+        # add periodic saving
+        self.save_periodic = train_config.get("save_periodic", -1)
 
         if self.log_probabilities:
             self.entropy_logger = make_retro_logger("{}/entropy.log".format(self.model_dir), "entropy_logger")
@@ -204,7 +207,11 @@ class TrainManager:
             raise ConfigurationError("Invalid segmentation level. "
                                      "Valid options: 'word', 'bpe', 'char'.")
         self.shuffle = train_config.get("shuffle", True)
-        self.epochs = train_config["epochs"]
+        self.epochs = train_config.get("epochs", -1)
+        # add total steps to control the training
+        self.total_steps = train_config.get('total_steps', -1)
+        assert (self.epochs != -1) is not (self.total_steps != -1), "Do not use epochs and total_steps in the same time!"
+        
         self.batch_size = train_config["batch_size"]
         # Placeholder so that we can use the train_iter in other functions.
         self.train_iter = None
@@ -261,6 +268,10 @@ class TrainManager:
         # multi-gpu training (should be after apex fp16 initialization)
         if self.n_gpu > 1:
             self.model = _DataParallel(self.model)
+        
+        # update total steps
+        if self.total_steps != -1:
+            self.total_steps += self.stats.steps
 
     def _save_checkpoint(self, new_best: bool = True) -> None:
         """
@@ -453,7 +464,19 @@ class TrainManager:
             self.n_gpu if self.n_gpu > 1 else self.batch_size,
             self.batch_size * self.batch_multiplier)
 
-        for epoch_no in range(self.epochs):
+        # for epoch_no in range(self.epochs):
+        epoch_no = -1
+        steps_break = False
+        epoch_break = False
+        
+        while True:
+            epoch_no += 1
+            epoch_break = self.epochs != -1 and epoch_no >= self.epochs
+            steps_break = self.total_steps != -1 and self.stats.steps >= self.total_steps
+
+            if epoch_break or steps_break:
+                break
+            
             logger.info("EPOCH %d", epoch_no + 1)
 
             if self.scheduler is not None and self.scheduler_step_at == "epoch":
@@ -527,27 +550,42 @@ class TrainManager:
                         start = time.time()
                         total_valid_duration = 0
                         start_tokens = self.stats.total_tokens
+                    
+                    if self.save_periodic != -1 and self.stats.steps % self.save_periodic == 0:
+                        logger.info('Save periodically at steps: {}.'.format(self.stats.steps))
+                        self._save_checkpoint(False)
 
                     # Only add complete loss of full mini-batch to epoch_loss
                     epoch_loss += batch_loss  # accumulate epoch_loss
                     batch_loss = 0  # rest batch_loss
-
+        
                     # validate on the entire dev set
                     if self.stats.steps % self.validation_freq == 0 and self.stats.steps != 0:
                         valid_duration = self._validate(valid_data, epoch_no)
                         total_valid_duration += valid_duration
 
+                    steps_break = self.total_steps != -1 and self.stats.steps >= self.total_steps
+                    if steps_break is True:
+                        break
+
                 if self.stats.stop:
                     break
+                
             if self.stats.stop:
                 logger.info('Training ended since minimum lr %f was reached.',
                             self.learning_rate_min)
+                break
+                
+            if steps_break is True:
+                logger.info('Training ended after %3d steps.',
+                            self.stats.steps)
                 break
 
             logger.info('Epoch %3d: total training loss %.2f', epoch_no + 1,
                         epoch_loss)
         else:
             logger.info('Training ended after %3d epochs.', epoch_no + 1)
+            
         logger.info('Best validation result (greedy) at step %8d: %6.2f %s.',
                     self.stats.best_ckpt_iter, self.stats.best_ckpt_score,
                     self.early_stopping_metric)

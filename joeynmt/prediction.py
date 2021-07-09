@@ -145,7 +145,7 @@ def validate_on_data(model: Model, data: Dataset,
                         critic=critic, 
                         log_probabilities=log_probabilities, 
                         pickle_logs=pickle_logs,
-                        return_logging=True)
+                        return_logging=False)
                         
                     if method == "a2c":
                         losses = batch_loss
@@ -157,7 +157,7 @@ def validate_on_data(model: Model, data: Dataset,
                         # trg_input=batch.trg_input, trg_mask=batch.trg_mask,
                         # max_output_length=max_output_length,
                         # src_mask=batch.src_mask, src_length=batch.src_length, )
-                    batch_loss, distribution, _, _ = model(return_type="loss", return_logging=True, **vars(batch))
+                    batch_loss, distribution, _, _ = model(return_type="loss", return_logging=False, **vars(batch))
                     
                 if n_gpu > 1:
                     batch_loss = batch_loss.mean() # average on multi-gpu
