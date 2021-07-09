@@ -264,6 +264,15 @@ class TrainManager:
                 reset_scheduler=train_config.get("reset_scheduler", False),
                 reset_optimizer=train_config.get("reset_optimizer", False),
                 reset_iter_state=train_config.get("reset_iter_state", False))
+        else:
+            model_dir = train_config["model_dir"]
+            if train_config.get("overwrite", False) is False and os.path.exists(os.path.join(model_dir, "lastest.ckpt")) is True:
+                self.init_from_checkpoint(
+                os.path.exists(os.path.join(model_dir, "lastest.ckpt")),
+                reset_best_ckpt=False,
+                reset_scheduler=False,
+                reset_optimizer=False,
+                reset_iter_state=False)
 
         # multi-gpu training (should be after apex fp16 initialization)
         if self.n_gpu > 1:
