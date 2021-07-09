@@ -953,9 +953,12 @@ def train(cfg_file: str, skip_test: bool = False) -> None:
     cfg = load_config(cfg_file)
 
     # make logger
-    model_dir = make_model_dir(cfg["training"]["model_dir"],
-                               overwrite=cfg["training"].get(
-                                   "overwrite", False))
+    overwrite=cfg["training"].get("overwrite", False)
+    if overwrite:
+        model_dir = make_model_dir(cfg["training"]["model_dir"])
+    else:
+        logger.warn("Overwrite is disable and restore from latest.")
+        model_dir = cfg["training"]["model_dir"]
     _ = make_logger(model_dir, mode="train")  # version string returned
     # TODO: save version number in model checkpoints
 
