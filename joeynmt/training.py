@@ -266,9 +266,9 @@ class TrainManager:
                 reset_iter_state=train_config.get("reset_iter_state", False))
         else:
             model_dir = train_config["model_dir"]
-            if train_config.get("overwrite", False) is False and os.path.exists(os.path.join(model_dir, "lastest.ckpt")) is True:
+            if train_config.get("overwrite", False) is False and os.path.exists(os.path.join(model_dir, "latest.ckpt")) is True:
                 self.init_from_checkpoint(
-                os.path.exists(os.path.join(model_dir, "lastest.ckpt")),
+                os.path.join(model_dir, "latest.ckpt"),
                 reset_best_ckpt=False,
                 reset_scheduler=False,
                 reset_optimizer=False,
